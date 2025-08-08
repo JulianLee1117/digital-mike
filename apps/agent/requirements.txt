@@ -2,3 +2,5 @@ lancedb
 sentence-transformers
 numpy
 pyarrow
+requests
+openai
