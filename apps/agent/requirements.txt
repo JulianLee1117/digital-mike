@@ -1,0 +1,4 @@
+lancedb
+sentence-transformers
+numpy
+pyarrow
