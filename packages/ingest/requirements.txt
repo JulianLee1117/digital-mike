@@ -1,0 +1,6 @@
+  lancedb
+  pymupdf
+  sentence-transformers
+  numpy
+  tqdm
+  regex
