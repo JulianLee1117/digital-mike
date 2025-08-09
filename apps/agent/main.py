@@ -10,9 +10,9 @@ from livekit.plugins import openai as lk_openai
 from livekit.plugins.silero import VAD
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-from persona import SYSTEM_PROMPT
-from rag.store import RAGStore
-from tools.nutritionix import lookup_macros, summarize_for_speech
+from .persona import SYSTEM_PROMPT
+from .rag.store import RAGStore
+from .tools.nutritionix import lookup_macros, summarize_for_speech
 
 load_dotenv()  # loads apps/agent/.env if you `cd` here or export PWD
 

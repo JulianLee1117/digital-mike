@@ -26,6 +26,8 @@ async def main():
     print(f"[agent] connected as {room.local_participant.identity!r} in room {room.name!r}")
 
     session: AgentSession | None = None
+    # when last user leaves, schedule a delayed stop; cancel if someone rejoins
+    pending_stop: asyncio.Task | None = None
 
     async def start_session():
         nonlocal session
@@ -47,8 +49,12 @@ async def main():
             room_output_options=RoomOutputOptions(audio_enabled=True, transcription_enabled=True, sync_transcription=False),
         )
         print("[agent] session started")
-        await session.say("Audio check. You should hear me now.", allow_interruptions=False)
-        await session.generate_reply(instructions="Greet the user in one sentence and ask their training goal.")
+        try:
+            await session.generate_reply(
+                instructions="Ask the user for their training goals in one short sentence."
+            )
+        except Exception as e:
+            print("[agent] initial reply skipped:", e)
 
     async def stop_session():
         nonlocal session
@@ -69,6 +75,11 @@ async def main():
         if p.identity == agent_identity:
             return
         print("[agent] participant connected:", p.identity)
+        # cancel any pending stop if a user returns quickly
+        nonlocal pending_stop
+        if pending_stop and not pending_stop.done():
+            pending_stop.cancel()
+            pending_stop = None
         asyncio.create_task(start_session())
 
     @room.on("participant_disconnected")
@@ -76,9 +87,20 @@ async def main():
         if p.identity == agent_identity:
             return
         print("[agent] user left:", p.identity, "reason=", reason)
-        # if nobody else remains, stop the session
+        # if nobody else remains, schedule a delayed stop so quick reconnects don't kill the session
         if non_agent_participants() == 0:
-            asyncio.create_task(stop_session())
+            nonlocal pending_stop
+            async def delayed():
+                try:
+                    await asyncio.sleep(10)
+                    if non_agent_participants() == 0:
+                        await stop_session()
+                except asyncio.CancelledError:
+                    pass
+            # cancel previous pending stop and schedule a new one
+            if pending_stop and not pending_stop.done():
+                pending_stop.cancel()
+            pending_stop = asyncio.create_task(delayed())
 
     # if a user is already in the room, start once
     if non_agent_participants() > 0:

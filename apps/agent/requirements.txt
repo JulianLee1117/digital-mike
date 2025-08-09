@@ -10,3 +10,4 @@ livekit
 livekit-api
 fastapi
 uvicorn
+httpx

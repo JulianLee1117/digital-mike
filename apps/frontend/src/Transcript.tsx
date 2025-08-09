@@ -1,13 +1,25 @@
 import { useEffect, useRef } from "react";
+import { ScrollArea } from "./components/ui/scroll-area";
+
 export function Transcript({ lines }: { lines: string[] }) {
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [lines]);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [lines]);
   return (
-    <div style={{border:"1px solid #ddd", padding:12, height:220, overflow:"auto", borderRadius:8}}>
-      {lines.length === 0 ? <div style={{opacity:.6}}>No transcript yet…</div> :
-        lines.map((l, i) => <div key={i} style={{margin:"6px 0"}}>{l}</div>)
-      }
-      <div ref={endRef} />
-    </div>
+    <ScrollArea className="h-64 rounded-md border bg-card">
+      <div className="p-4">
+        {lines.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No transcript yet…</div>
+        ) : (
+          lines.map((l, i) => (
+            <div key={i} className="transcript-line my-1">
+              {l}
+            </div>
+          ))
+        )}
+        <div ref={endRef} />
+      </div>
+    </ScrollArea>
   );
 }

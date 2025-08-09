@@ -5,10 +5,18 @@ import {
 } from "livekit-client";
 import { getToken } from "./api";
 import { Transcript } from "./Transcript";
+import { Button } from "./components/ui/button";
 
 setLogLevel(LogLevel.info);
 
-export function LiveKitClient({ roomName, identity }: { roomName: string; identity: string }) {
+export function LiveKitClient({
+  roomName,
+  identity,
+  onEnd,
+  token,
+  url,
+  onSpeakingChange,
+}: { roomName: string; identity: string; onEnd?: () => void; token?: string; url?: string; onSpeakingChange?: (speaking: boolean) => void }) {
   const [status, setStatus] = useState("disconnected");
   const [lines, setLines] = useState<string[]>([]);
   const [needsUnlock, setNeedsUnlock] = useState(false);
@@ -19,12 +27,14 @@ export function LiveKitClient({ roomName, identity }: { roomName: string; identi
     let isMounted = true;
     (async () => {
       setStatus("connecting");
-      const { token, url } = await getToken(roomName, identity);
+
+      // NEW: prefer pre-minted token/url from /api/start
+      const creds = token && url ? { token, url } : await getToken(roomName, identity);
 
       const room = new Room();
       roomRef.current = room;
 
-      await room.connect(url, token, { autoSubscribe: true });
+      await room.connect(creds.url, creds.token, { autoSubscribe: true });
       if (!isMounted) return;
       setStatus("connected");
 
@@ -42,9 +52,13 @@ export function LiveKitClient({ roomName, identity }: { roomName: string; identi
       // logs
       room.on(RoomEvent.ParticipantConnected, (p) => console.log("[fe] joined:", p.identity));
       room.on(RoomEvent.ParticipantDisconnected, (p) => console.log("[fe] left:", p.identity));
-      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) =>
-        console.log("[fe] active speakers:", speakers.map(s => s.identity)),
-      );
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        const activeIds = speakers.map(s => s.identity);
+        // naive heuristic: if any remote participant is speaking, show ring
+        const remoteSpeaking = activeIds.some(id => id !== room.localParticipant.identity);
+        try { onSpeakingChange?.(remoteSpeaking); } catch {}
+        console.log("[fe] active speakers:", activeIds);
+      });
 
       // attach audio on subscribe
       room.on(RoomEvent.TrackSubscribed, async (track, _pub, participant) => {
@@ -106,6 +120,7 @@ export function LiveKitClient({ roomName, identity }: { roomName: string; identi
       audioElsRef.current = [];
       roomRef.current?.disconnect();
       roomRef.current = null;
+      try { onSpeakingChange?.(false); } catch {}
     };
   }, [roomName, identity]);
 
@@ -125,16 +140,23 @@ export function LiveKitClient({ roomName, identity }: { roomName: string; identi
     } finally {
       roomRef.current = null;
       setStatus("disconnected");
+      try { onSpeakingChange?.(false); } catch {}
+      onEnd?.();
     }
   };
 
   return (
-    <div>
-      <div>LiveKit: {status}</div>
-      {needsUnlock && <button onClick={unlockAudio}>Enable audio</button>}
-      {status === "connected" && <button onClick={leave}>Leave call</button>}
-      <h3>Transcript</h3>
+    <div className="mx-auto flex w-full max-w-md flex-col items-stretch gap-4">
+      <div className="text-center text-xs text-muted-foreground">Status: {status}</div>
+      {needsUnlock && (
+        <Button variant="secondary" onClick={unlockAudio}>Enable audio</Button>
+      )}
       <Transcript lines={lines} />
+      {status === "connected" && (
+        <div className="flex justify-center pt-2">
+          <Button variant="destructive" onClick={leave}>End Call</Button>
+        </div>
+      )}
     </div>
   );
 }
