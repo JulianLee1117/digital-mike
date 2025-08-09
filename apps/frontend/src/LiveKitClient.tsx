@@ -4,7 +4,7 @@ import {
   setLogLevel, LogLevel,
 } from "livekit-client";
 import { getToken } from "./api";
-import { Transcript } from "./Transcript";
+import { Transcript, TranscriptItem } from "./Transcript";
 import { Button } from "./components/ui/button";
 
 setLogLevel(LogLevel.info);
@@ -18,10 +18,14 @@ export function LiveKitClient({
   onSpeakingChange,
 }: { roomName: string; identity: string; onEnd?: () => void; token?: string; url?: string; onSpeakingChange?: (speaking: boolean) => void }) {
   const [status, setStatus] = useState("disconnected");
-  const [lines, setLines] = useState<string[]>([]);
+  const [items, setItems] = useState<TranscriptItem[]>([]);
   const [needsUnlock, setNeedsUnlock] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const audioElsRef = useRef<HTMLAudioElement[]>([]);
+  // Map trackSid → speaker ('user' | 'mike') for accurate attribution
+  const trackToSpeakerRef = useRef<Record<string, "user" | "mike">>({});
+  // Maintain one live partial state per speaker/track key with last update time for segmentation
+  const partialStateRef = useRef<Record<string, { id: string; updatedAt: number }>>({});
 
   useEffect(() => {
     let isMounted = true;
@@ -61,9 +65,11 @@ export function LiveKitClient({
       });
 
       // attach audio on subscribe
-      room.on(RoomEvent.TrackSubscribed, async (track, _pub, participant) => {
+      room.on(RoomEvent.TrackSubscribed, async (track, pub, participant) => {
         console.log("[fe] TrackSubscribed:", track.kind, "from", participant.identity);
         if (track.kind === Track.Kind.Audio) {
+          // map remote agent audio track → 'mike'
+          try { if ((pub as any)?.trackSid) { trackToSpeakerRef.current[(pub as any).trackSid] = "mike"; } } catch {}
           const el = (track as RemoteAudioTrack).attach() as HTMLAudioElement;
           el.style.display = "none";
           el.muted = false;
@@ -85,6 +91,7 @@ export function LiveKitClient({
           const tr = pub.track;
           if (pub.isSubscribed && tr) {
             console.log("[fe] attaching pre-existing audio from", p.identity);
+            try { if ((pub as any)?.trackSid) { trackToSpeakerRef.current[(pub as any).trackSid] = "mike"; } } catch {}
             const el = (tr as RemoteAudioTrack).attach() as HTMLAudioElement;
             el.style.display = "none";
             el.muted = false;
@@ -98,13 +105,53 @@ export function LiveKitClient({
         }
       }
 
-      // transcriptions (lk.transcription)
+      // map local mic publications → 'user'
+      for (const [, pub] of room.localParticipant.audioTrackPublications) {
+        try { if ((pub as any)?.trackSid) { trackToSpeakerRef.current[(pub as any).trackSid] = "user"; } } catch {}
+      }
+
+      // streaming transcriptions (lk.transcription)
       room.registerTextStreamHandler("lk.transcription", async (reader, pinfo) => {
-        const text = await reader.readAll();
         const attrs = (reader as any).info?.attributes as Record<string, string> | undefined;
+        const from = pinfo.identity;
+        const trk = attrs?.["lk.transcribed_track_id"];
+        let speaker: "user" | "mike" | undefined = trk ? trackToSpeakerRef.current[trk] : undefined;
+        if (!speaker) {
+          const isUser = from === room.localParticipant.identity;
+          speaker = isUser ? "user" : "mike";
+        }
+
+        const text = await reader.readAll();
         const isFinal = attrs?.["lk.transcription_final"] === "true";
-        console.log("[fe] transcript:", { from: pinfo.identity, isFinal, text });
-        if (isFinal) setLines((prev) => [...prev, text]);
+
+        const key = trk ? `${speaker}:${trk}` : `${speaker}`;
+        const now = Date.now();
+        const existing = partialStateRef.current[key];
+
+        if (!isFinal) {
+          setItems((prev) => {
+            let working = prev;
+            // If there's a stale partial (no updates for >1.2s), finalize it implicitly and start a new bubble
+            if (existing && now - existing.updatedAt > 1200) {
+              working = working.map((it) => (it.id === existing.id ? { ...it, final: true } : it));
+              partialStateRef.current[key] = undefined as any;
+            }
+            let id = existing && (!existing || now - existing.updatedAt <= 1200) ? existing.id : '';
+            if (!id) {
+              id = `t-${speaker}-${now}-${Math.random().toString(36).slice(2, 6)}`;
+            }
+            partialStateRef.current[key] = { id, updatedAt: now };
+            const others = working.filter((it) => it.id !== id);
+            return [...others, { id, speaker, text, final: false }];
+          });
+        } else {
+          const id = existing?.id || `t-${speaker}-${now}-${Math.random().toString(36).slice(2, 6)}`;
+          delete partialStateRef.current[key];
+          setItems((prev) => {
+            const others = prev.filter((it) => it.id !== id);
+            return [...others, { id, speaker, text, final: true }];
+          });
+        }
       });
 
     })().catch((e) => {
@@ -120,6 +167,8 @@ export function LiveKitClient({
       audioElsRef.current = [];
       roomRef.current?.disconnect();
       roomRef.current = null;
+      trackToSpeakerRef.current = {};
+      partialStateRef.current = {};
       try { onSpeakingChange?.(false); } catch {}
     };
   }, [roomName, identity]);
@@ -151,7 +200,7 @@ export function LiveKitClient({
       {needsUnlock && (
         <Button variant="secondary" onClick={unlockAudio}>Enable audio</Button>
       )}
-      <Transcript lines={lines} />
+      <Transcript items={items} />
       {status === "connected" && (
         <div className="flex justify-center pt-2">
           <Button variant="destructive" onClick={leave}>End Call</Button>
