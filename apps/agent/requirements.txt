@@ -4,3 +4,9 @@ numpy
 pyarrow
 requests
 openai
+python-dotenv
+livekit-agents[openai,silero,turn-detector]
+livekit
+livekit-api
+fastapi
+uvicorn

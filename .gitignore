@@ -1,12 +1,30 @@
 
 # env
-apps/agent/.env
+*.env
+*.env.*
+!*.env.example
 
 # Python
 .venv/
-
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-*.pyd
+.mypy_cache/
+.pytest_cache/
+
+# Node / Vite
+apps/frontend/node_modules/
+apps/frontend/dist/
+apps/frontend/.vite/
+apps/frontend/.turbo/
+apps/frontend/.eslintcache
+
+# OS/editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Large/generated data (use LFS or ignore)
+data/lancedb/
 
