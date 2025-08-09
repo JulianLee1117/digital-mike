@@ -7,6 +7,7 @@ from livekit.agents import (
     ChatContext, ChatMessage, function_tool, RunContext
 )
 from livekit.plugins import openai as lk_openai
+from livekit.plugins import elevenlabs as lk_elevenlabs
 from livekit.plugins.silero import VAD
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
@@ -42,27 +43,84 @@ class DigitalMike(Agent):
             text = _msg_text(new_message)
             if not text:
                 return
-            # optional brevity policy for TTS
-            turn_ctx.add_message(role="system", content="Keep replies to 1–3 short sentences for voice output.")
+            # Ignore very short interjections unless it's a question
+            tokens = text.strip().split()
+            if len(tokens) < 2 and "?" not in text:
+                return
+            # Brief voice-first policy
+            turn_ctx.add_message(
+                role="system",
+                content=(
+                    "Voice-first: Keep replies tight for speech. Prefer 1–3 short sentences;"
+                    " add a brief plan only if useful."
+                ),
+            )
             rag = RAGStore()
             results = rag.search(text, k=4)
             if not results:
+                # Weak retrieval fallback: instruct model to stay generic and honest
+                turn_ctx.add_message(
+                    role="system",
+                    content=(
+                        "Retrieval is weak. Provide a generic, evidence-based answer."
+                        " Say you’re not fully certain. Don’t fabricate citations."
+                        " Max 2 short sentences in conversational coach voice."
+                        " If the user asks for plain language, define acronyms briefly"
+                        " and avoid jargon."
+                    ),
+                )
                 return
+
+            # Build ultra-compact RAG context and pick ONE best citation (chapter + page)
             lines = []
-            for r in results[:4]:
+            top_cite = None
+            for i, r in enumerate(results[:3]):
                 pg = r.get("page")
+                ch = r.get("chapter")
                 snippet = (r.get("text") or "").strip()
                 if not snippet:
                     continue
                 if len(snippet) > 380:
                     snippet = snippet[:380].rstrip() + " …"
-                lines.append(f"(p.{pg}) {snippet}")
+                # Normalize chapter label to avoid "Ch. Chapter"
+                chapter_num = None
+                if isinstance(ch, (str, int)):
+                    try:
+                        # Try to extract first integer in the string
+                        chapter_num = int(str(ch).split()[0].strip().strip(':').strip('#'))
+                    except Exception:
+                        chapter_num = None
+                # TTS-friendly citation phrase — always prefer chapter + page when present
+                if chapter_num is not None:
+                    cite = f"chapter {chapter_num} page {pg} in my book"
+                else:
+                    # try to keep any non-numeric chapter label if provided
+                    if isinstance(ch, str) and ch.strip():
+                        cite = f"{ch.strip()} page {pg} in my book"
+                    else:
+                        cite = f"page {pg} in my book"
+                if top_cite is None:
+                    top_cite = cite
+                lines.append(f"({cite}) {snippet}")
+
             rag_block = (
-                "RAG CONTEXT — excerpts from 'Scientific Principles of Strength Training':\n"
+                "RAG CONTEXT — 'Scientific Principles of Strength Training' snippets:\n"
                 + "\n".join(f"- {ln}" for ln in lines)
-                + "\n\nWhen citing, include page numbers like (p.X)."
+                + "\n\nGround answers in these."
             )
-            turn_ctx.add_message(role="assistant", content=rag_block)
+            # Make RAG visible as system guidance
+            turn_ctx.add_message(role="system", content=rag_block)
+
+            # Enforce the answer contract and citation style (explicitly mention chapter + page)
+            contract = (
+                "Answer contract: Acknowledge briefly, then max 2 sentences in conversational coach voice."
+                " Embed any plan naturally and briefly."
+                " If helpful, include at most one inline cite as: 'based on {"
+                + (top_cite or "page ? in my book") + "}'."
+                " Always prefer 'chapter X page Y' if available; say the words 'chapter' and 'page', no abbreviations."
+                " In medical/health contexts (e.g., heart conditions), skip citations and keep advice conservative."
+            )
+            turn_ctx.add_message(role="system", content=contract)
         except Exception:
             # never let the hook crash the session
             pass
@@ -72,13 +130,14 @@ async def entrypoint(ctx: agents.JobContext):
     session = AgentSession(
         stt=lk_openai.STT(),  # OpenAI Whisper/4o transcription
         llm=lk_openai.LLM(model=os.getenv("MODEL_NAME", "gpt-4o-mini")),
-        tts=lk_openai.TTS(
-            model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-            voice=os.getenv("OPENAI_TTS_VOICE", "alloy"),
+        tts=lk_elevenlabs.TTS(
+            voice_id=os.getenv("ELEVEN_VOICE_ID", "eGCULX6fOY83AsIVPZ8O"),
+            model=os.getenv("ELEVEN_TTS_MODEL", "eleven_multilingual_v2"),
         ),
-        vad=VAD.load(),
+        # More conservative VAD to avoid mid-thought interruptions
+        vad=VAD.load(min_speech_duration=0.25, min_silence_duration=0.8),
         turn_detection=MultilingualModel(),
-        use_tts_aligned_transcript=False,
+        use_tts_aligned_transcript=True,
     )
 
     await session.start(

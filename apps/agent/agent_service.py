@@ -1,5 +1,6 @@
 import asyncio
 import os
+import aiohttp
 from datetime import timedelta
 
 from dotenv import load_dotenv
@@ -70,6 +71,7 @@ async def _connect_and_run_room(room_name: str) -> None:
         from .main import DigitalMike  # late import to keep module path stable
         from livekit.agents import AgentSession, RoomInputOptions, RoomOutputOptions
         from livekit.plugins import openai as lk_openai
+        from livekit.plugins import elevenlabs as lk_elevenlabs
         from livekit.plugins.silero import VAD
 
         # Mint agent token scoped to this room
@@ -89,6 +91,7 @@ async def _connect_and_run_room(room_name: str) -> None:
         print(f"[agent] connected as {room.local_participant.identity!r} in room {room.name!r}")
 
         session: AgentSession | None = None
+        eleven_http: aiohttp.ClientSession | None = None
         pending_stop: asyncio.Task | None = None
 
         def non_agent_participants() -> int:
@@ -99,15 +102,22 @@ async def _connect_and_run_room(room_name: str) -> None:
             if session is not None:
                 return
             if not os.getenv("OPENAI_API_KEY"):
-                print("[agent] OPENAI_API_KEY missing; STT/LLM/TTS may fail.")
+                print("[agent] OPENAI_API_KEY missing; STT/LLM may fail.")
+            if not os.getenv("ELEVEN_API_KEY"):
+                print("[agent] ELEVEN_API_KEY missing; TTS may fail.")
+            # Create a dedicated HTTP session for ElevenLabs when running outside a JobContext
+            eleven_http = aiohttp.ClientSession()
             session = AgentSession(
                 stt=lk_openai.STT(),
                 llm=lk_openai.LLM(model=MODEL_NAME),
-                tts=lk_openai.TTS(
-                    model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-                    voice=os.getenv("OPENAI_TTS_VOICE", "alloy"),
+                tts=lk_elevenlabs.TTS(
+                    voice_id=os.getenv("ELEVEN_VOICE_ID", "eGCULX6fOY83AsIVPZ8O"),
+                    model=os.getenv("ELEVEN_TTS_MODEL", "eleven_multilingual_v2"),
+                    http_session=eleven_http,
                 ),
-                vad=VAD.load(min_speech_duration=0.1, min_silence_duration=0.4),
+                # More conservative VAD to reduce interruptions between short pauses
+                vad=VAD.load(min_speech_duration=0.25, min_silence_duration=0.8),
+                use_tts_aligned_transcript=True,
             )
             try:
                 await session.start(
@@ -124,7 +134,13 @@ async def _connect_and_run_room(room_name: str) -> None:
                     await session.aclose()
                 except Exception:
                     pass
+                try:
+                    if eleven_http and not eleven_http.closed:
+                        await eleven_http.close()
+                except Exception:
+                    pass
                 session = None
+                eleven_http = None
                 return
             print("[agent] session started")
             # First turn: concise greeting that asks for training goals
@@ -144,6 +160,12 @@ async def _connect_and_run_room(room_name: str) -> None:
             except Exception:
                 pass
             session = None
+            try:
+                if eleven_http and not eleven_http.closed:
+                    await eleven_http.close()
+            except Exception:
+                pass
+            eleven_http = None
             print("[agent] session stopped")
 
         @room.on("participant_connected")

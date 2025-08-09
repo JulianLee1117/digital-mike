@@ -43,7 +43,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-b from-background to-muted/20 p-6 dark:bg-[radial-gradient(ellipse_at_top,theme(colors.muted.DEFAULT)/0.25,transparent_60%)]">
+    <div className="flex min-h-screen items-center justify-center p-6 bg-gradient-to-b from-background to-muted/15 dark:[background-image:radial-gradient(1000px_600px_at_50%_-20%,hsl(var(--primary)/0.08),transparent),radial-gradient(800px_500px_at_80%_120%,hsl(var(--accent)/0.06),transparent)]">
       <div className="flex w-full max-w-lg flex-col items-center gap-6">
         {/* Removed outer card border by rendering content directly with subtle max-width; keep inner transcript box */}
         <div className={`flex w-full flex-col items-center ${!started ? "gap-7 p-2" : "gap-4 p-2"}`}>
@@ -52,7 +52,7 @@ export default function App() {
             <Avatar
               src={mike}
               alt="Mike"
-              className={`speaking-scale ${speaking ? "is-speaking" : ""} transition-[width,height] duration-500 ease-out ${!started ? "h-36 w-36" : "h-28 w-28"} shadow-inner ring-1 ring-border`}
+              className={`speaking-scale ${speaking ? "is-speaking" : ""} transition-[width,height] duration-500 ease-out ${!started ? "h-44 w-44" : "h-32 w-32"} shadow-inner ring-1 ring-border`}
             />
           </div>
 

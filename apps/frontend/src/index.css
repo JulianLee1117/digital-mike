@@ -35,33 +35,33 @@
 }
 
 .dark {
-  --background: 222.2 84% 4.9%;
-  --foreground: 210 40% 98%;
+  --background: 222 40% 7%;        /* deep navy */
+  --foreground: 210 25% 97%;       /* soft off-white */
 
-  --card: 222.2 84% 4.9%;
-  --card-foreground: 210 40% 98%;
+  --card: 222 36% 8%;
+  --card-foreground: 210 25% 97%;
 
-  --popover: 222.2 84% 4.9%;
-  --popover-foreground: 210 40% 98%;
+  --popover: 222 36% 8%;
+  --popover-foreground: 210 25% 97%;
 
-  --primary: 217.2 91.2% 59.8%;
-  --primary-foreground: 222.2 47.4% 11.2%;
+  --primary: 218 90% 62%;          /* azure */
+  --primary-foreground: 222 47% 11%;
 
-  --secondary: 217.2 32.6% 17.5%;
-  --secondary-foreground: 210 40% 98%;
+  --secondary: 220 28% 16%;        /* slate */
+  --secondary-foreground: 210 25% 97%;
 
-  --muted: 217.2 32.6% 17.5%;
-  --muted-foreground: 215 20.2% 65.1%;
+  --muted: 220 24% 14%;
+  --muted-foreground: 215 18% 72%;
 
-  --accent: 217.2 32.6% 17.5%;
-  --accent-foreground: 210 40% 98%;
+  --accent: 228 28% 18%;
+  --accent-foreground: 210 25% 97%;
 
-  --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 210 40% 98%;
+  --destructive: 0 60% 34%;
+  --destructive-foreground: 210 25% 97%;
 
-  --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
-  --ring: 224.3 76.3% 48%;
+  --border: 220 28% 22%;
+  --input: 220 28% 22%;
+  --ring: 220 80% 60%;
 }
 
 body {
@@ -86,12 +86,12 @@ body {
   opacity: 0;
   pointer-events: none;
 }
-.speaking-rings::before { animation: ring-pulse 1.6s ease-out infinite; }
-.speaking-rings::after { animation: ring-pulse 1.6s ease-out infinite; animation-delay: .8s; }
+.speaking-rings::before { animation: ring-pulse 1.8s ease-out infinite; }
+.speaking-rings::after { animation: ring-pulse 1.8s ease-out infinite; animation-delay: .9s; }
 
 @keyframes ring-pulse {
   0% { opacity: .6; transform: scale(1); }
-  80% { opacity: 0; transform: scale(1.55); }
+  80% { opacity: 0; transform: scale(1.7); }
   100% { opacity: 0; }
 }
 

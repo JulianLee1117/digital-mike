@@ -5,7 +5,7 @@ pyarrow
 requests
 openai
 python-dotenv
-livekit-agents[openai,silero,turn-detector]
+livekit-agents[openai,silero,turn-detector,elevenlabs]
 livekit
 livekit-api
 fastapi

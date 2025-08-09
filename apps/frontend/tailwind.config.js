@@ -66,6 +66,9 @@ export default {
         "accordion-up": "accordion-up 0.2s ease-out",
         "pulse-ring": "pulse-ring 1.4s ease-out infinite",
       },
+      boxShadow: {
+        subtle: "0 1px 2px 0 rgba(0,0,0,0.05), 0 10px 40px -12px rgba(0,0,0,0.25)",
+      },
     },
   },
   plugins: [animate],

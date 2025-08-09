@@ -1,8 +1,10 @@
 import os, sys, asyncio
+import aiohttp
 from dotenv import load_dotenv
 from livekit import rtc, api
 from livekit.agents import AgentSession, RoomInputOptions, RoomOutputOptions
 from livekit.plugins import openai as lk_openai
+from livekit.plugins import elevenlabs as lk_elevenlabs
 from livekit.plugins.silero import VAD
 from main import DigitalMike
 
@@ -33,14 +35,16 @@ async def main():
         nonlocal session
         if session is not None:
             return
+        eleven_http = aiohttp.ClientSession()
         session = AgentSession(
             stt=lk_openai.STT(),
             llm=lk_openai.LLM(model=os.getenv("MODEL_NAME", "gpt-4o-mini")),
-            tts=lk_openai.TTS(
-                model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-                voice=os.getenv("OPENAI_TTS_VOICE", "alloy"),
+            tts=lk_elevenlabs.TTS(
+                voice_id=os.getenv("ELEVEN_VOICE_ID", "eGCULX6fOY83AsIVPZ8O"),
+                model=os.getenv("ELEVEN_TTS_MODEL", "eleven_multilingual_v2"),
+                http_session=eleven_http,
             ),
-            vad=VAD.load(min_speech_duration=0.1, min_silence_duration=0.4),
+            vad=VAD.load(min_speech_duration=0.25, min_silence_duration=0.8),
         )
         await session.start(
             room=room,
@@ -62,6 +66,14 @@ async def main():
             return
         try:
             await session.aclose()
+        except Exception:
+            pass
+        # Close custom ElevenLabs session if present
+        try:
+            tts = session._voice._tts if session else None
+            http = getattr(tts, "_session", None) if tts else None
+            if http and not http.closed:
+                await http.close()
         except Exception:
             pass
         session = None
