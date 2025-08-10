@@ -144,3 +144,6 @@ See `apps/agent/.env.example` for the full list. Important ones:
 - tweak RAG parameters, methods
 - try making chunks smaller
 - track latency time for endpointing, stt, rag, llm, tts, playback
+- make user join room same time as agent
+- make transcript real time
+- host agent on AWS
