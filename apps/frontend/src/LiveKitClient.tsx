@@ -26,6 +26,36 @@ export function LiveKitClient({
   const trackToSpeakerRef = useRef<Record<string, "user" | "mike">>({});
   // Maintain one live partial state per speaker/track key with last update time for segmentation
   const partialStateRef = useRef<Record<string, { id: string; updatedAt: number }>>({});
+  const toolMapRef = useRef<Record<string, string>>({});
+
+  const upsertToolLine = (ev: { type: string; payload: any }) => {
+    const { type, payload } = ev || {};
+    const toolId = (payload && payload.id) || `tool-${Date.now()}`;
+    const existingTid = toolMapRef.current[toolId];
+
+    let text: string;
+    if (type === "nutritionix:start") {
+      const q = (payload?.query || "").toString();
+      text = `🔧 Nutrition analysis…${q ? ` (\"${q}\")` : ""}`;
+    } else if (type === "nutritionix:result") {
+      const items = payload?.items || [];
+      const head = items.map((i: any) => `${i.food_name} (${i.calories} kcal, P${i.protein} C${i.carbs} F${i.fat})`).join("; ");
+      text = `✅ Nutrition results: ${head || "no items"}`;
+    } else if (type === "nutritionix:error") {
+      text = `❌ Nutrition lookup failed: ${payload?.message || "unknown error"}`;
+    } else {
+      text = `ℹ️ ${type}`;
+    }
+
+    setItems((prev) => {
+      if (existingTid) {
+        return prev.map((seg) => (seg.id === existingTid ? { ...seg, text, final: true } : seg));
+      }
+      const tid = `tool-${toolId}`;
+      toolMapRef.current[toolId] = tid;
+      return [...prev, { id: tid, speaker: "mike", text, final: true }];
+    });
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -109,6 +139,19 @@ export function LiveKitClient({
       for (const [, pub] of room.localParticipant.audioTrackPublications) {
         try { if ((pub as any)?.trackSid) { trackToSpeakerRef.current[(pub as any).trackSid] = "user"; } } catch {}
       }
+
+      // Data packet topic 'tool.events' (agent publishes via publish_data)
+      room.on(RoomEvent.DataReceived, (payload, _p, _kind, topic) => {
+        if (topic !== "tool.events") return;
+        try {
+          const text = typeof payload === "string" ? payload : new TextDecoder().decode(payload as ArrayBuffer);
+          const ev = JSON.parse(text);
+          console.log("[fe] tool.events:", ev);
+          upsertToolLine(ev);
+        } catch (e) {
+          // ignore malformed
+        }
+      });
 
       // streaming transcriptions (lk.transcription)
       room.registerTextStreamHandler("lk.transcription", async (reader, pinfo) => {

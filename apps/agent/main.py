@@ -1,11 +1,15 @@
 import os
+import json
+import uuid
+from typing import Optional
 from dotenv import load_dotenv
 
 from livekit import agents
 from livekit.agents import (
     AgentSession, Agent, RoomInputOptions, RoomOutputOptions,
-    ChatContext, ChatMessage, function_tool, RunContext
+    ChatContext, ChatMessage, function_tool, RunContext, get_job_context, ToolError
 )
+from livekit import rtc
 from livekit.plugins import openai as lk_openai
 from livekit.plugins import elevenlabs as lk_elevenlabs
 from livekit.plugins.silero import VAD
@@ -19,8 +23,34 @@ load_dotenv()  # loads apps/agent/.env if you `cd` here or export PWD
 
 # ---------- Agent definition ----------
 class DigitalMike(Agent):
-    def __init__(self) -> None:
+    def __init__(self, room: Optional[rtc.Room] = None) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
+        self.room = room
+
+    async def _emit_tool_event(self, kind: str, payload: dict) -> None:
+        """
+        Try RPC to the first non-agent participant; fall back to text stream topic 'tool.events'.
+        """
+        room = self.room
+        if room is None:
+            try:
+                room = get_job_context().room  # available when launched via agents.cli
+            except Exception:
+                room = None
+
+        if not room:
+            return
+
+        # For UI notifications a one-way data packet is simpler and more robust than RPC
+        evt = {"type": kind, "payload": payload}
+        data = json.dumps(evt)
+        try:
+            await room.local_participant.publish_data(
+                data.encode("utf-8"), reliable=True, topic="tool.events"
+            )
+            print("[agent] published tool.events")
+        except Exception as e:
+            print("[agent] tool.events publish failed:", e)
 
     # Nutrition tool the LLM can call
     @function_tool(
@@ -32,8 +62,22 @@ class DigitalMike(Agent):
         ),
     )
     async def tool_lookup_macros(self, context: RunContext, query: str) -> str:
-        items = lookup_macros(query)
-        return summarize_for_speech(items)
+        event_id = str(uuid.uuid4())
+        await self._emit_tool_event(
+            "nutritionix:start", {"id": event_id, "query": (query or "").strip()[:200]}
+        )
+        try:
+            items = lookup_macros(query)
+            preview = items[:3]
+            await self._emit_tool_event(
+                "nutritionix:result", {"id": event_id, "items": preview}
+            )
+            return summarize_for_speech(items)
+        except Exception as e:
+            await self._emit_tool_event(
+                "nutritionix:error", {"id": event_id, "message": str(e)[:200]}
+            )
+            raise ToolError(f"Nutrition lookup failed: {e}")
 
     # RAG: inject context after the user finishes a turn, before LLM response
     async def on_user_turn_completed(

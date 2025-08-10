@@ -1,6 +1,12 @@
 import json
 import os
-from nutritionix import lookup_macros, summarize_for_speech
+from pathlib import Path
+from dotenv import load_dotenv
+from .nutritionix import lookup_macros, summarize_for_speech
+
+# Load env from apps/agent/.env regardless of CWD
+AGENT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(AGENT_DIR / ".env")
 
 def main():
     q = "200g cooked chicken breast"

@@ -122,7 +122,7 @@ async def _connect_and_run_room(room_name: str) -> None:
             try:
                 await session.start(
                     room=room,
-                    agent=DigitalMike(),
+                    agent=DigitalMike(room=room),
                     room_input_options=RoomInputOptions(audio_enabled=True, text_enabled=True),
                     room_output_options=RoomOutputOptions(
                         audio_enabled=True, transcription_enabled=True, sync_transcription=False
