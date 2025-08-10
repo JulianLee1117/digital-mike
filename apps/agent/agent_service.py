@@ -98,7 +98,7 @@ async def _connect_and_run_room(room_name: str) -> None:
             return sum(1 for _, p in room.remote_participants.items() if p.identity != AGENT_IDENTITY)
 
         async def start_session() -> None:
-            nonlocal session
+            nonlocal session, eleven_http
             if session is not None:
                 return
             if not os.getenv("OPENAI_API_KEY"):
@@ -152,7 +152,7 @@ async def _connect_and_run_room(room_name: str) -> None:
                 print("[agent] initial reply skipped:", e)
 
         async def stop_session() -> None:
-            nonlocal session
+            nonlocal session, eleven_http
             if session is None:
                 return
             try:

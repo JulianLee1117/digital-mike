@@ -11,3 +11,4 @@ livekit-api
 fastapi
 uvicorn
 httpx
+aiohttp

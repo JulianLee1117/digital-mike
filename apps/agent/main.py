@@ -19,6 +19,11 @@ from .persona import SYSTEM_PROMPT
 from .rag.store import RAGStore
 from .tools.nutritionix import lookup_macros, summarize_for_speech
 
+import re
+from .utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 load_dotenv()  # loads apps/agent/.env if you `cd` here or export PWD
 
 # ---------- Agent definition ----------
@@ -99,29 +104,75 @@ class DigitalMike(Agent):
                     " add a brief plan only if useful."
                 ),
             )
+            rag_min_score = float(os.getenv("RAG_MIN_SCORE", "0.38"))
+            rag_k = int(os.getenv("RAG_K", "4"))
+            rag_lambda = float(os.getenv("RAG_LAMBDA", "0.65"))
+            rag_debug = os.getenv("RAG_DEBUG", "0") == "1"
+
+            # heuristics
+            kw = ("how","what","why","should","sets","reps","rir","deload","volume","hypertrophy",
+                  "strength","program","plan","workout","sra","mrv","mev","mav","fatigue","overload",
+                  "variation","phase","protein","calories","macros","cut","bulk","diet")
+            low = text.lower()
+            is_training_query = ("?" in text) or any(k in low for k in kw)
+
+            def sanitize_query(s: str) -> str:
+                parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", s) if p.strip()]
+                keep = [p for p in parts if ("?" in p) or any(k in p.lower() for k in kw)]
+                out = " ".join(keep)[:512].strip()
+                return out or s[:512].strip()
+
+            turn_id = str(uuid.uuid4())
+
+            if not is_training_query:
+                if rag_debug:
+                    logger.info("rag.decision", extra={"extra": {
+                        "turn_id": turn_id, "decision": "skip", "reason": "non_training", "text": text[:160]
+                    }})
+                return
+
+            query = sanitize_query(text)
             rag = RAGStore()
-            results = rag.search(text, k=4)
+            results = rag.search(query, k=rag_k, lambda_mult=rag_lambda, min_score=rag_min_score)
+
+            if rag_debug:
+                if results:
+                    top = results[0]
+                    logger.info("rag.candidates", extra={
+                        "extra": {
+                            "query": query[:200],
+                            "k": rag_k, "returned": len(results), "lambda_mult": rag_lambda, "min_score": rag_min_score,
+                            "top_score": round(top.get("score", -1.0), 3),
+                            "top_cosine": round(top.get("cosine", -1.0), 3),
+                            "top": [
+                                {"page": r["page"], "chapter": r["chapter"], "score": round(r.get("score", -1.0), 3)}
+                                for r in results[:5]
+                            ],
+                        }
+                    })
+                else:
+                    logger.info("rag.candidates", extra={
+                        "extra": {
+                            "query": query[:200],
+                            "k": rag_k, "returned": 0, "lambda_mult": rag_lambda, "min_score": rag_min_score,
+                        }
+                    })
+
             if not results:
-                # Weak retrieval fallback: instruct model to stay generic and honest
-                turn_ctx.add_message(
-                    role="system",
-                    content=(
-                        "Retrieval is weak. Provide a generic, evidence-based answer."
-                        " Say you’re not fully certain. Don’t fabricate citations."
-                        " Max 2 short sentences in conversational coach voice."
-                        " If the user asks for plain language, define acronyms briefly"
-                        " and avoid jargon."
-                    ),
-                )
+                logger.info("rag.decision", extra={"extra": {
+                    "turn_id": turn_id, "decision": "skip", "reason": "weak_retrieval", "min_score": rag_min_score
+                }})
                 return
 
             # Build ultra-compact RAG context and pick ONE best citation (chapter + page)
             lines = []
             top_cite = None
+            collected_full_texts = []
             for i, r in enumerate(results[:3]):
                 pg = r.get("page")
                 ch = r.get("chapter")
-                snippet = (r.get("text") or "").strip()
+                full_text = (r.get("text") or "").strip()
+                snippet = full_text
                 if not snippet:
                     continue
                 if len(snippet) > 380:
@@ -146,6 +197,8 @@ class DigitalMike(Agent):
                 if top_cite is None:
                     top_cite = cite
                 lines.append(f"({cite}) {snippet}")
+                # keep the untruncated text for downstream extraction
+                collected_full_texts.append(full_text)
 
             rag_block = (
                 "RAG CONTEXT — 'Scientific Principles of Strength Training' snippets:\n"
@@ -156,15 +209,133 @@ class DigitalMike(Agent):
             turn_ctx.add_message(role="system", content=rag_block)
 
             # Enforce the answer contract and citation style (explicitly mention chapter + page)
+            rag_strict = os.getenv("RAG_STRICT", "1") == "1"
             contract = (
                 "Answer contract: Acknowledge briefly, then max 2 sentences in conversational coach voice."
                 " Embed any plan naturally and briefly."
                 " If helpful, include at most one inline cite as: 'based on {"
                 + (top_cite or "page ? in my book") + "}'."
                 " Always prefer 'chapter X page Y' if available; say the words 'chapter' and 'page', no abbreviations."
+                + (" Only use the RAG CONTEXT for factual claims; don't introduce facts not present."
+                   " If the RAG CONTEXT seems insufficient, say so briefly or ask a clarifying question."
+                   if rag_strict else "")
+                + " When enumerating lists that appear in the RAG CONTEXT, reproduce the item labels verbatim and in order before any paraphrase."
                 " In medical/health contexts (e.g., heart conditions), skip citations and keep advice conservative."
             )
             turn_ctx.add_message(role="system", content=contract)
+
+            # Generic enumeration extraction from retrieved texts; supports numbered and bulleted lists
+            def _extract_enumerated_lines(texts: list[str], max_items: int = 10) -> list[str]:
+                import re as _re
+                items: list[str] = []
+                # Pass 1: line-based capture (works if ingestion preserved newlines)
+                line_patterns = [
+                    r"^\s*(?:\(?\d{1,2}\)?[\.)]|\d{1,2}\.)\s+(.+?)\s*$",  # 1.) or (1) or 1.
+                    r"^\s*[-•]\s+(.+?)\s*$",  # bullet lines
+                    r"^\s*\(?[a-zA-Z]\)?[\.)]\s+(.+?)\s*$",  # a.) or a) or (a)
+                ]
+                compiled_lines = [_re.compile(p) for p in line_patterns]
+                for t in texts:
+                    for line in (t or "").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        for cp in compiled_lines:
+                            m = cp.match(line)
+                            if m:
+                                content = m.group(1).strip()
+                                content = _re.sub(r"\s+[\-–—]$", "", content)
+                                items.append(content)
+                                break
+                        if len(items) >= max_items:
+                            break
+                    if len(items) >= max_items:
+                        break
+                if items:
+                    return items[:max_items]
+
+                # Pass 2: inline capture for flattened text (no newlines)
+                joined = " \n ".join(texts)
+                # Digit enumerations like: 1.) text 2.) text ...
+                enum_digits = _re.compile(
+                    r"(?:^|\s)\(?(?P<num>\d{1,2})\)?[\.)]\s+(?P<item>.+?)(?=(?:\s\(?\d{1,2}\)?[\.)]\s+)|$)",
+                    flags=_re.DOTALL,
+                )
+                # Letter enumerations like: a.) text b.) text ... (case-insensitive)
+                enum_letters = _re.compile(
+                    r"(?i)(?:^|\s)\(?(?P<let>[a-z])\)?[\.)]\s+(?P<item>.+?)(?=(?:\s\(?[a-z]\)?[\.)]\s+)|$)",
+                    flags=_re.DOTALL,
+                )
+                # Bullet enumerations like: • item • item ...
+                bullet_re = _re.compile(r"•\s+(?P<item>[^•]+)(?=•|$)")
+
+                enum_hits = []
+                for m in enum_digits.finditer(joined):
+                    try:
+                        n = int(m.group("num"))
+                    except ValueError:
+                        n = -1
+                    if 1 <= n <= 20:
+                        enum_hits.append((n, m.group("item").strip()))
+                if enum_hits:
+                    enum_hits.sort(key=lambda x: x[0])
+                    for _, it in enum_hits:
+                        clean = _re.sub(r"\s+\-+$", "", it).strip()
+                        if clean:
+                            items.append(clean)
+                else:
+                    # Try lettered sequences a.) b.) c.) ... up to 26
+                    let_hits = []
+                    for m in enum_letters.finditer(joined):
+                        let = (m.group("let") or "").lower()
+                        if let and 'a' <= let <= 'z':
+                            idx = ord(let) - ord('a') + 1
+                            let_hits.append((idx, m.group("item").strip()))
+                    if let_hits:
+                        let_hits.sort(key=lambda x: x[0])
+                        for _, it in let_hits:
+                            clean = _re.sub(r"\s+\-+$", "", it).strip()
+                            if clean:
+                                items.append(clean)
+                    else:
+                        for m in bullet_re.finditer(joined):
+                            it = m.group("item").strip()
+                            clean = _re.sub(r"\s+\-+$", "", it).strip()
+                            if clean:
+                                items.append(clean)
+
+                return items[:max_items]
+
+            enumerated = _extract_enumerated_lines(collected_full_texts, max_items=10)
+            if enumerated:
+                # Keep it compact and verbatim-first
+                verbatim_block = (
+                    "FACTS (verbatim; when enumerating, list these exact lines first):\n" +
+                    "\n".join(f"- {it}" for it in enumerated[:6])
+                )
+                turn_ctx.add_message(role="system", content=verbatim_block)
+                # If the user is clearly asking for a list/enumeration, force verbatim listing first
+                ask_enum = any(w in low for w in ["list", "what are", "which are", "four", "4", "items", "variables", "layers"])
+                if ask_enum:
+                    # Build a response template with exact items, and forbid markdown emphasis
+                    template_list = "\n".join(f"- {it}" for it in enumerated[:6])
+                    turn_ctx.add_message(
+                        role="system",
+                        content=(
+                            "Output requirements: Do not use bold/italics/asterisks/markdown. "
+                            "Start your answer with these exact items verbatim and in order, one per line, prefixed by '- ':\n"
+                            + template_list +
+                            "\nAfter the list, add exactly one short clarification sentence. "
+                            "Do not introduce new items, do not rename items, and keep tone professional."
+                        ),
+                    )
+                if rag_debug:
+                    logger.info("rag.enumerated", extra={"extra": {"turn_id": turn_id, "ask_enum": ask_enum, "items": enumerated[:6]}})
+
+            if rag_debug:
+                logger.info("rag.injected", extra={"extra": {
+                    "turn_id": turn_id, "cite": (top_cite or ""), "rag_block_preview": rag_block[:220]
+                }})
         except Exception:
             # never let the hook crash the session
             pass
@@ -173,13 +344,12 @@ async def entrypoint(ctx: agents.JobContext):
     # Build STT/LLM/TTS/VAD/turn-detection pipeline using LiveKit plugins
     session = AgentSession(
         stt=lk_openai.STT(),  # OpenAI Whisper/4o transcription
-        llm=lk_openai.LLM(model=os.getenv("MODEL_NAME", "gpt-4o-mini")),
+        llm=lk_openai.LLM(model=os.getenv("MODEL_NAME", "gpt-4o-mini"), temperature=float(os.getenv("LLM_TEMPERATURE", "0.2"))),
         tts=lk_elevenlabs.TTS(
             voice_id=os.getenv("ELEVEN_VOICE_ID", "eGCULX6fOY83AsIVPZ8O"),
             model=os.getenv("ELEVEN_TTS_MODEL", "eleven_multilingual_v2"),
         ),
-        # More conservative VAD to avoid mid-thought interruptions
-        vad=VAD.load(min_speech_duration=0.25, min_silence_duration=0.8),
+        vad=VAD.load(min_speech_duration=0.25, min_silence_duration=0.4),
         turn_detection=MultilingualModel(),
         use_tts_aligned_transcript=True,
     )

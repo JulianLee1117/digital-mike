@@ -27,4 +27,6 @@ apps/frontend/.eslintcache
 
 # Large/generated data (use LFS or ignore)
 data/lancedb/
+apps/agent/.env
+apps/agent/.env.*
 

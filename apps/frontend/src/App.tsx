@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { LiveKitClient } from "./LiveKitClient";
 import { Button } from "./components/ui/button";
-import { Card, CardContent } from "./components/ui/card";
 import { Avatar } from "./components/ui/avatar";
 import mike from "./assets/mike.jpeg";
 import { startCall } from "./api";

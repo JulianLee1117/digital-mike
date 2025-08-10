@@ -5,6 +5,9 @@ import numpy as np
 import lancedb
 from sentence_transformers import SentenceTransformer
 
+from ..utils.logging import get_logger
+logger = get_logger(__name__)
+
 
 DEFAULT_DB_DIR = os.getenv("DB_DIR", "./data/lancedb")
 DEFAULT_TABLE = os.getenv("TABLE", "israetel_pdf")
@@ -87,6 +90,7 @@ class RAGStore:
         include_fields: Optional[List[str]] = None,
         lambda_mult: float = 0.55,
         dedupe_on: Optional[List[str]] = None,
+        min_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Returns list of dicts with at least {text, page, chapter, section?, id?}.
@@ -97,6 +101,7 @@ class RAGStore:
         - lambda_mult: MMR relevance/diversity balance (0..1)
         - dedupe_on: fields to dedupe by (default ["page","text"])
         """
+        # Default: moderate candidate pool before MMR for a good precision/recall balance
         if fetch_k is None:
             fetch_k = max(k * 8, 16)
         if include_fields is None:
@@ -129,23 +134,43 @@ class RAGStore:
             seen.add(s)
             uniq.append(h)
 
-        # Build doc matrix for MMR
+        # Build doc matrix for MMR and cosine similarities
         doc_vecs = np.stack([np.asarray(h["vector"], dtype=np.float32) for h in uniq])
-        # Safety: ensure normalized (should already be)
-        # norms = np.linalg.norm(doc_vecs, axis=1, keepdims=True)
-        # doc_vecs = doc_vecs / np.clip(norms, 1e-8, None)
+        rel = (doc_vecs @ qv).astype(float)
 
+        # Select top-k diverse docs using MMR based on vector similarity only
         keep_idx = _mmr(qv, doc_vecs, k=k, lambda_mult=lambda_mult)
         selected = [uniq[i] for i in keep_idx]
 
-        # Slim records
+        # Build output with cosine scores; apply optional min_score gate
         out: List[Dict[str, Any]] = []
-        for r in selected:
+        for i in keep_idx:
+            r = uniq[i]
             slim = {f: r.get(f) for f in include_fields if f in r}
-            # enforce required keys
             slim["text"] = slim.get("text", "")
             slim["page"] = int(slim.get("page", -1))
             slim["chapter"] = slim.get("chapter")
-            # section may be None if you disabled it at ingestion
+            # cosine similarity as score for logging/inspection
+            slim["cosine"] = float(rel[i])
+            slim["score"] = float(rel[i])
+            if (min_score is not None) and (slim["score"] < min_score):
+                continue
             out.append(slim)
+        # Keep MMR-selected order; optionally you can sort by score if desired
+
+        # emit debug log
+        level_debug = os.getenv("RAG_DEBUG", "0") == "1"
+        if level_debug and out:
+            logger.debug("rag.candidates", extra={
+                "extra": {
+                    "query": query[:200],
+                    "k": k, "returned": len(out), "lambda_mult": lambda_mult, "min_score": min_score,
+                    "top_score": round(out[0]["score"], 3),
+                    "top_cosine": round(out[0].get("cosine", -1.0), 3),
+                    "top": [
+                        {"page": r["page"], "chapter": r["chapter"], "score": round(r["score"], 3)}
+                        for r in out[:5]
+                    ],
+                }
+            })
         return out
