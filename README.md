@@ -1,6 +1,5 @@
 ### Digital Mike Israetel — Real‑Time RAG Voice Agent
 
-- by Julian Lee
 
 Digital Mike is a real‑time strength‑coach voice agent you can talk to in your browser. It runs on LiveKit Cloud for low‑latency audio, transcribes speech live, retrieves evidence from a strength‑training book via LanceDB, and answers with a concise, coach‑style voice. It also performs a nutrition macro lookup via the Nutritionix API when you ask about calories or macros.
 
