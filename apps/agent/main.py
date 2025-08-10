@@ -31,6 +31,8 @@ class DigitalMike(Agent):
     def __init__(self, room: Optional[rtc.Room] = None) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
         self.room = room
+        # Lazily initialize RAG store on first use to avoid per-turn construction cost
+        self._rag_store: RAGStore | None = None
 
     async def _emit_tool_event(self, kind: str, payload: dict) -> None:
         """
@@ -132,8 +134,10 @@ class DigitalMike(Agent):
                 return
 
             query = sanitize_query(text)
-            rag = RAGStore()
-            results = rag.search(query, k=rag_k, lambda_mult=rag_lambda, min_score=rag_min_score)
+            # Lazy-init shared RAG store once per agent instance
+            if self._rag_store is None:
+                self._rag_store = RAGStore()
+            results = self._rag_store.search(query, k=rag_k, lambda_mult=rag_lambda, min_score=rag_min_score)
 
             if rag_debug:
                 if results:
